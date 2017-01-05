@@ -53,7 +53,6 @@
 #define MODELS_ALL (0xffffffff)
 #define MODELS_123 (MODEL(1) | MODEL(2) | MODEL(3))
 
-#define ITEM_RESET 0x0008
 #define ITEM_VID   0x3701
 #define ITEM_PID   0x3702
 #define ITEM_NAME  0x3703
@@ -101,7 +100,7 @@ static const config_param_t cfg_items[] =
   { ITEM_SERI, 0, MAX_SERIAL, CFG_STR, MODELS_123, WO, "Serial: %s\n" },
 
   { ITEM_FLUSH, 0, 1, CFG_INT8,  MODEL(5), RW, "Flush buffers: %x\n" },
-  { ITEM_MODE,  0, 2, CFG_INT16, MODEL(5), RW, "SCI/ECI mode: %04x\n" },
+  { ITEM_MODE,  0, 2, CFG_INT16, MODEL(5), RW, "SCI/ECI mode: %04hx\n" },
 };
 
 static void print_cp210x_cfg (libusb_device_handle *cp210x)
@@ -164,12 +163,12 @@ static bool cp210x_set_pid (libusb_device_handle *cp210x, uint16_t pid)
 
 static bool cp210x_set_flush (libusb_device_handle *cp210x, uint8_t bitmap)
 {
-  return cp210x_set_cfg (cp210x, ITEM_FLUSH, bitmap, NULL, 0);
+  return cp210x_set_cfg (cp210x, ITEM_FLUSH, 0, &bitmap, 1);
 }
 
 static bool cp210x_set_mode (libusb_device_handle *cp210x, uint16_t mode)
 {
-  return cp210x_set_cfg (cp210x, ITEM_MODE, mode, NULL, 0);
+  return cp210x_set_cfg (cp210x, ITEM_MODE, 0, (uint8_t *)&mode, 2);
 }
 
 static bool encode_descriptor_string (uint8_t out[256], const char *str)
@@ -220,7 +219,7 @@ static bool cp210x_set_serial (libusb_device_handle *cp210x, const char *serial)
 
 static bool cp210x_reset (libusb_device_handle *cp210x)
 {
-  return cp210x_set_cfg (cp210x, ITEM_RESET, 0, NULL, 0);
+  return libusb_reset_device (cp210x) == 0;
 }
 
 
@@ -412,8 +411,8 @@ int main (int argc, char *argv[])
 
   if (set_vid || set_pid || set_flush || set_mode || set_name || set_serial)
     cp210x_reset (cp210x);
-  else
-    print_cp210x_cfg (cp210x);
+
+  print_cp210x_cfg (cp210x);
 
 out:
   if (cp210x)

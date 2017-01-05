@@ -51,7 +51,6 @@
 
 #define MODEL(n) (1 << n)
 #define MODELS_ALL (0xffffffff)
-#define MODELS_123 (MODEL(1) | MODEL(2) | MODEL(3))
 
 #define ITEM_VID   0x3701
 #define ITEM_PID   0x3702
@@ -73,6 +72,8 @@ static const vid_pid_t known[] =
   { 0x10C4, 0xEA70 }
 };
 
+typedef int (*param_read_fn) (libusb_device_handle *cp210x, uint16_t item, uint8_t *buffer, unsigned buflen);
+
 typedef struct
 {
   uint16_t value;
@@ -80,27 +81,72 @@ typedef struct
   uint32_t len;
   enum { CFG_INT8, CFG_INT16, CFG_STR } type;
   uint32_t on_model;
-  bool write_only;
+  param_read_fn get;
   const char *fmtstr;
 } config_param_t;
 
-#define WO true
-#define RW false
+
+static int read_vendor (libusb_device_handle *cp210x, uint16_t item, uint8_t *buffer, unsigned buflen)
+{
+  return libusb_control_transfer (cp210x,
+    LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE,
+    CP210X_CFG, item, 0, buffer, buflen, TIMEOUT_MS);
+}
+
+static int read_xid (libusb_device_handle *cp210x, uint16_t item, uint8_t *buffer, unsigned buflen)
+{
+  struct libusb_device_descriptor desc;
+  memset (&desc, 0, sizeof (desc));
+  int ret = libusb_get_device_descriptor (libusb_get_device (cp210x), &desc);
+  if (ret < 0)
+    return ret;
+  if (item == ITEM_VID)
+  {
+    buffer[0] = desc.idVendor >> 8;
+    buffer[1] = desc.idVendor;
+  }
+  else if (item == ITEM_PID)
+  {
+    buffer[0] = desc.idProduct >> 8;
+    buffer[1] = desc.idProduct;
+  }
+  else
+    memset (buffer, 0, 2);
+  return buflen;
+}
+
+static int read_str (libusb_device_handle *cp210x, uint16_t item, uint8_t *buffer, unsigned buflen)
+{
+  struct libusb_device_descriptor desc;
+  memset (&desc, 0, sizeof (desc));
+  int ret = libusb_get_device_descriptor (libusb_get_device (cp210x), &desc);
+  if (ret < 0)
+    return ret;
+  uint16_t index = 0;
+  switch (item)
+  {
+    case ITEM_NAME: index = desc.iProduct; break;
+    case ITEM_SERI: index = desc.iSerialNumber; break;
+  }
+  return libusb_get_string_descriptor_ascii (
+    cp210x, index, buffer, buflen);
+}
+
 
 static const config_param_t cfg_items[] =
 {
   // Note: model entry must be first
-  { ITEM_MODEL, '0', 1, CFG_INT8, MODELS_ALL, RW, "Model: CP210%c\n" },
+  { ITEM_MODEL, '0', 1, CFG_INT8, MODELS_ALL, read_vendor, "Model: CP210%c\n" },
 
   // Aaarrgh - attempts to READ these through the vendor interface
   // got interpreted as a WRITE! Stupid 0000:0000 VID:PID *mutter*grumble*
-  { ITEM_VID,  0, 2, CFG_INT16, MODELS_123, WO, "Vendor ID: %04x\n" },
-  { ITEM_PID,  0, 2, CFG_INT16, MODELS_123, WO, "Product ID: %04x\n" },
-  { ITEM_NAME, 0, 255, CFG_STR, MODELS_123, WO, "Name: %s\n" },
-  { ITEM_SERI, 0, MAX_SERIAL, CFG_STR, MODELS_123, WO, "Serial: %s\n" },
+  { ITEM_VID,  0, 2, CFG_INT16, MODELS_ALL, read_xid, "Vendor ID: %04hx\n" },
+  { ITEM_PID,  0, 2, CFG_INT16, MODELS_ALL, read_xid, "Product ID: %04hx\n" },
+  { ITEM_NAME, 0, 255, CFG_STR, MODELS_ALL, read_str, "Name: %s\n" },
+  { ITEM_SERI, 0, MAX_SERIAL, CFG_STR, MODELS_ALL, read_str, "Serial: %s\n" },
 
-  { ITEM_FLUSH, 0, 1, CFG_INT8,  MODEL(5), RW, "Flush buffers: %x\n" },
-  { ITEM_MODE,  0, 2, CFG_INT16, MODEL(5), RW, "SCI/ECI mode: %04hx\n" },
+  { ITEM_FLUSH, 0, 1, CFG_INT8,  MODEL(5), read_vendor, "Flush buffers: %x\n" },
+  { ITEM_MODE,  0, 2, CFG_INT16, MODEL(5), read_vendor, "SCI/ECI mode: %04hx\n" },
 };
 
 static void print_cp210x_cfg (libusb_device_handle *cp210x)
@@ -109,12 +155,11 @@ static void print_cp210x_cfg (libusb_device_handle *cp210x)
   for (unsigned i = 0; i < (sizeof (cfg_items)/sizeof (cfg_items[0])); ++i)
   {
     const config_param_t *item = &cfg_items[i];
-    char buffer[256] = { 0, };
-    if (item->write_only || !(i == 0 || (item->on_model & MODEL(model))))
+    uint8_t buffer[256] = { 0, };
+    if (!(i == 0 || (item->on_model & MODEL(model))))
       continue;
-    int ret = libusb_control_transfer (cp210x,
-      LIBUSB_ENDPOINT_IN | LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_RECIPIENT_DEVICE,
-      CP210X_CFG, item->value, 0, (uint8_t *)buffer, item->len, TIMEOUT_MS);
+    int ret =
+      item->get (cp210x, item->value, buffer, sizeof (buffer));
     if (ret < 0)
       fprintf (stderr, "error: failed to read cfg item %04x: %s\n",
         item->value, libusb_strerror (ret));
@@ -125,12 +170,12 @@ static void print_cp210x_cfg (libusb_device_handle *cp210x)
        switch (item->type)
        {
          case CFG_INT8:
-           printf (item->fmtstr, (int)buffer[0] + item->value_offs);
+           printf (item->fmtstr, (unsigned)buffer[0] + item->value_offs);
            if (i == 0)
              model = (uint8_t)buffer[0];
            break;
          case CFG_INT16:
-           printf (item->fmtstr, (int)buffer[0] << 8 | buffer[1]);
+           printf (item->fmtstr, ((uint16_t)buffer[0] << 8) | buffer[1]);
            break;
          case CFG_STR:
            printf (item->fmtstr, buffer);

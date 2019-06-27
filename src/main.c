@@ -36,7 +36,11 @@
 // Alas I could not get it to work with the CP2105 chip I needed to reprogram,
 // hence this rewrite.
 
+#ifdef __FreeBSD__
+#include <libusb.h>
+#else
 #include <libusb-1.0/libusb.h>
+#endif
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>

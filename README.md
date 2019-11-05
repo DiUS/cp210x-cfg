@@ -3,7 +3,7 @@ CLI utility for programming CP210x USB&lt;-&gt;UART bridges
 
 Intended as a scriptable alternative to the official Silicon Labs CP21xx Customization Utility.
 
-Tested with CP2102 and CP2105 chips.
+Tested with CP2102, CP2105 and the newer CP2102n chips.
 
 Supported fields that can be programmed:
   - Vendor ID
@@ -13,9 +13,15 @@ Supported fields that can be programmed:
   - Buffer flush bitmap
   - SCI/ECI gpio/modem mode
 
+Additionally for the CP2102n:
+  - Manufacturer string
+  - Toggle between internal and external serial number
+
 # CAUTION
+This applies to the older CP210x chips (not the CP2102n)
 Programming a CP210x config field is a write-once operation. It's perfectly possible to write bad values.
 The consequences are yours, and yours alone.
+
 
 Suffice to say that I've got a couple of modules which have a VID/PID of 0000:0000. Don't do that.
 If you happen to screw up the VID/PID anyway, in Linux you can sort-of work around it by registering the
@@ -25,6 +31,8 @@ new VID/PID combo with the cp210x driver like so:
 echo 0000 0000 | sudo tee /sys/bus/usb-serial/drivers/cp210x/new_id
 ```
 Consider yourself forewarned, and forearmed.
+
+Newer chips like the CP2102n can be reprogrammed indefinitely.
 
 ## Examples
 ####Showing the built-in help message (may differ from below)
@@ -44,7 +52,9 @@ cp210x-cfg [-h ] |
   -F flush      Program the given buffer flush bitmap (CP2105 only)
   -M mode       Program the given SCI/ECI mode (CP2105 only)
   -N name       Program the given product name string
+  -C manufact.  Program the given manufacturer name (CP2101n only)\n
   -S serial     Program the given serial string
+  -t 0/1        Toggle between internal and user specified serial (CP2101n only)\n"
 
 Unless the -d option is used, the first found CP210x device is used.
 If no programming options are used, the current values are printed.

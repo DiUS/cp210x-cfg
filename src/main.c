@@ -37,6 +37,7 @@
 // hence this rewrite.
 
 #include <libusb-1.0/libusb.h>
+#include <arpa/inet.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +48,8 @@
 #define CP210X_CFG 0xff
 #define TIMEOUT_MS 500
 #define MAX_SERIAL 128
+#define MAX_NAME   256
+#define MAX_MANUF  128
 
 
 #define MODEL(n) (1 << n)
@@ -55,10 +58,142 @@
 #define ITEM_VID   0x3701
 #define ITEM_PID   0x3702
 #define ITEM_NAME  0x3703
+#define ITEM_MANUF 0x3714
 #define ITEM_SERI  0x3704
 #define ITEM_MODEL 0x370b
 #define ITEM_FLUSH 0x370d
 #define ITEM_MODE  0x3711
+
+/* Config structore for 2102n devices is from
+   https://www.silabs.com/documents/public/application-notes/AN978-cp210x-usb-to-uart-api-specification.pdf 
+*/
+struct cp2102n_deviceDesc {
+    uint8_t    bLength;
+    uint8_t    bDescriptorType;
+    uint16_t    bcdUSB;
+    uint8_t    bDeviceClass;
+    uint8_t    bDeviceSubClass;
+    uint8_t    bDeviceProtocol;
+    uint8_t    bMaxPacketSize0;
+    uint16_t    set_ids_VID;
+    uint16_t    set_ids_PID;
+    uint16_t    set_ids_releaseVersion;
+    uint8_t    iManufacturer;
+    uint8_t    iProduct;
+    uint8_t    iSerialNumber;
+    uint8_t    bNumConfigurations;
+} __attribute__((packed));
+
+struct cp2102n_configDesc {
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint16_t wTotalLength;
+    uint8_t bNumInterfaces;
+    uint8_t bConfigurationValue;
+    uint8_t iConfiguration;
+    uint8_t bitflags;
+    uint8_t set_ids_maxPower_real;
+} __attribute__((packed));
+
+struct cp2102n_interfaceDescriptor {
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint8_t bInterfaceNumber;
+    uint8_t bAlternateSetting;
+    uint8_t bNumEndpoints;
+    uint8_t bInterfaceClass;
+    uint8_t bInterfaceSubClass;
+    uint8_t bInterfaceProtocol;
+    uint8_t iInterface;
+} __attribute__((packed));
+
+struct cp2102n_bulk {
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint8_t bEndpointAddress;
+    uint8_t bmAttributes;
+    uint16_t wMaxPacketSize;
+    uint8_t bInterval;
+} __attribute__((packed));
+
+struct cp2102n_langDesc {
+    uint16_t langDesc0;
+    uint16_t langDesc1;
+    uint8_t bitpadding;
+} __attribute__((packed));
+
+struct cp2102n_mfrDesc {
+  uint8_t mfrDescLen;
+  uint8_t usbStringDesc; // always 0x03
+  char set_ids_manufacturerString[128];
+  uint8_t bitpadding;
+} __attribute__((packed));
+
+struct cp2102n_prodDesc {
+  uint8_t prodDescLen;
+  uint8_t usbStringDesc; // always 0x03
+  char set_ids_productString[256];
+} __attribute__((packed));
+
+struct cp2102n_serDesc {
+  uint8_t serDescLen;
+  uint8_t usbStringDesc; // always 0x03
+  char set_ids_serialString[128];
+} __attribute__((packed));
+
+struct cp2102n_portSettings {
+  uint8_t bitfields[23];
+} __attribute__((packed));
+
+struct cp2102n_commProp {
+    uint16_t PacketLength;
+    uint16_t PacketVersion;
+    uint32_t ServiceMask;
+    uint32_t Reserved1;
+    uint32_t MaxTxQueue;
+    uint32_t MaxRxQueue;
+    uint32_t MaxBaud;
+    uint32_t ProvSubType;
+    uint32_t ProvCapabilities;
+    uint32_t SettableParams;
+    uint32_t SettableBaud;
+    uint16_t SettableData;
+    uint16_t SettableStopParity;
+    uint32_t CurrentTxQueue;
+    uint32_t CurrentRxQueue;
+    uint32_t ProvSpec1;
+    uint32_t ProvSpec2;
+    char ProvChar[6];
+} __attribute__((packed));
+
+struct cp2102n_config {
+    uint16_t configSize;
+    uint8_t configVersion;
+    uint8_t enableBootloader;
+    uint8_t enableConfigUpdate;
+    struct cp2102n_deviceDesc deviceDesc;
+    struct cp2102n_configDesc configDesc;
+    struct cp2102n_interfaceDescriptor interfaceDesc;
+    struct cp2102n_bulk bulkOut;
+    struct cp2102n_bulk bulkIn;
+    struct cp2102n_langDesc langDesc;
+    struct cp2102n_mfrDesc mfrDesc;
+    struct cp2102n_prodDesc prodDesc;
+    uint8_t useInternalSerial;
+    struct cp2102n_serDesc serDesc;
+    struct cp2102n_portSettings portSettings;
+    struct cp2102n_commProp commProp;
+    uint16_t rs485Setup;
+    uint16_t rs485Hold;
+    uint8_t flowOn;
+    uint8_t flowOff;
+    uint8_t clockDivider;
+    uint16_t fletcherChecksum;
+} __attribute__((packed));
+
+#define CP2102N_CHECKSUM_LEN 2
+
+static struct cp2102n_config cp2102n_cfg;
 
 typedef struct
 {
@@ -127,22 +262,38 @@ static int read_str (libusb_device_handle *cp210x, uint16_t item, uint8_t *buffe
   {
     case ITEM_NAME: index = desc.iProduct; break;
     case ITEM_SERI: index = desc.iSerialNumber; break;
+    case ITEM_MANUF: index = desc.iManufacturer; break;
   }
   return libusb_get_string_descriptor_ascii (
     cp210x, index, buffer, buflen);
 }
 
 
+static int cp2102n_read_config(libusb_device_handle *cp210x, struct cp2102n_config* cfg)
+{
+  memset(cfg, 0, sizeof(struct cp2102n_config));
+
+  return libusb_control_transfer(cp210x, 0xC0, 0xFF, 0xe, 0,
+          (uint8_t*) cfg, sizeof(struct cp2102n_config), 0);
+}
+
+static int cp2102n_write_config(libusb_device_handle *cp210x, struct cp2102n_config* cfg)
+{
+  return libusb_control_transfer(cp210x, 0x40, 0xFF, 0x370F, 0,
+          (uint8_t*) cfg, sizeof(struct cp2102n_config), 0);
+}
+
 static const config_param_t cfg_items[] =
 {
   // Note: model entry must be first
-  { ITEM_MODEL, '0', 1, CFG_INT8, MODELS_ALL, read_vendor, "Model: CP210%c\n" },
+  { ITEM_MODEL, 0, 1, CFG_INT8, MODELS_ALL, read_vendor, "Model: CP210%s\n" },
 
   // Aaarrgh - attempts to READ these through the vendor interface
   // got interpreted as a WRITE! Stupid 0000:0000 VID:PID *mutter*grumble*
   { ITEM_VID,  0, 2, CFG_INT16, MODELS_ALL, read_xid, "Vendor ID: %04hx\n" },
   { ITEM_PID,  0, 2, CFG_INT16, MODELS_ALL, read_xid, "Product ID: %04hx\n" },
   { ITEM_NAME, 0, 255, CFG_STR, MODELS_ALL, read_str, "Name: %s\n" },
+  { ITEM_MANUF, 0, 255, CFG_STR, MODELS_ALL, read_str, "Manufacturer: %s\n" },
   { ITEM_SERI, 0, MAX_SERIAL, CFG_STR, MODELS_ALL, read_str, "Serial: %s\n" },
 
   { ITEM_FLUSH, 0, 1, CFG_INT8,  MODEL(5), read_vendor, "Flush buffers: %x\n" },
@@ -170,9 +321,24 @@ static void print_cp210x_cfg (libusb_device_handle *cp210x)
        switch (item->type)
        {
          case CFG_INT8:
-           printf (item->fmtstr, (unsigned)buffer[0] + item->value_offs);
            if (i == 0)
              model = (uint8_t)buffer[0];
+           switch (model) {
+             case 32:
+               printf (item->fmtstr, "2N QFN28");
+               break;
+             case 33:
+               printf (item->fmtstr, "2N QFN24");
+               break;
+             case 34:
+               printf (item->fmtstr, "2N QFN20");
+               break;
+             default: {
+              char s[2] = { '0' + model, '\0' };
+              printf (item->fmtstr, s);
+             }
+             break;
+           }
            break;
          case CFG_INT16:
            printf (item->fmtstr, ((uint16_t)buffer[0] << 8) | buffer[1]);
@@ -182,6 +348,14 @@ static void print_cp210x_cfg (libusb_device_handle *cp210x)
            break;
        }
      }
+  }
+
+  if (model >= 32) {
+    if (cp2102n_read_config(cp210x, &cp2102n_cfg) < 0)
+      return;
+    
+    printf("Use internal serial: %d\n", cp2102n_cfg.useInternalSerial ? 1 : 0);
+    //printf("Serial (user): %s\n", )
   }
 }
 
@@ -261,6 +435,45 @@ static bool cp210x_set_serial (libusb_device_handle *cp210x, const char *serial)
   return cp210x_set_cfg (cp210x, ITEM_SERI, 0, buffer, buffer[0]);
 }
 
+static bool cp2102n_set_name(struct cp2102n_config* cfg, const char *serial)
+{
+  memset(cfg->prodDesc.set_ids_productString, 0, sizeof(cfg->prodDesc.set_ids_productString));
+
+  if (!encode_descriptor_string ((uint8_t*) &cfg->prodDesc, serial))
+    return false;
+
+  return true;
+}
+
+static bool cp2102n_set_serial(struct cp2102n_config* cfg, const char *name)
+{
+  memset(cfg->serDesc.set_ids_serialString, 0, sizeof(cfg->serDesc.set_ids_serialString));
+
+  if (!encode_descriptor_string ((uint8_t*) &cfg->serDesc, name))
+    return false;
+  if (cfg->serDesc.serDescLen > MAX_SERIAL)
+  {
+    fprintf (stderr, "error: serial string too long\n");
+    return false;
+  }
+
+  return true;
+}
+
+static bool cp2102n_set_manuf(struct cp2102n_config* cfg, const char *name)
+{
+  memset(cfg->mfrDesc.set_ids_manufacturerString, 0, sizeof(cfg->mfrDesc.set_ids_manufacturerString));
+
+  if (!encode_descriptor_string ((uint8_t*) &cfg->mfrDesc, name))
+    return false;
+  if (cfg->mfrDesc.mfrDescLen > MAX_MANUF)
+  {
+    fprintf (stderr, "error: manufacturer string too long\n");
+    return false;
+  }
+
+  return true;
+}
 
 static bool cp210x_reset (libusb_device_handle *cp210x)
 {
@@ -276,6 +489,26 @@ static bool recognised_cp210x_dev (uint16_t vid, uint16_t pid)
       return true;
   }
   return false;
+}
+
+static uint16_t fletcher16(uint8_t *dataIn, uint16_t bytes)
+{
+  uint16_t sum1 = 0xff, sum2 = 0xff;
+  uint16_t tlen;
+  while (bytes) {
+    tlen = bytes >= 20 ? 20 : bytes;
+    bytes -= tlen;
+
+    do {
+      sum2 += sum1 += *dataIn++;
+    } while (--tlen);
+    sum1 = (sum1 & 0xff) + (sum1 >> 8);
+    sum2 = (sum2 & 0xff) + (sum2 >> 8);
+  }
+  /* Second reduction step to reduce sums to 8 bits */
+  sum1 = (sum1 & 0xff) + (sum1 >> 8);
+  sum2 = (sum2 & 0xff) + (sum2 >> 8);
+  return sum2 << 8 | sum1;
 }
 
 void syntax (void)
@@ -295,13 +528,16 @@ void syntax (void)
 "  -F flush      Program the given buffer flush bitmap (CP2105 only)\n"
 "  -M mode       Program the given SCI/ECI mode (CP2105 only)\n"
 "  -N name       Program the given product name string\n"
+"  -C manufact.  Program the given manufacturer name (CP2101n only)\n"
 "  -S serial     Program the given serial string\n"
+"  -t 0/1        Toggle between internal and user specified serial (CP2101n only)\n"
 "\n"
 "Unless the -d option is used, the first found CP210x device is used.\n"
 "If no programming options are used, the current values are printed.\n"
 "\n"
   ); 
 }
+
 
 #define usb_err_out(msg,err,ec) \
   do { \
@@ -332,10 +568,16 @@ int main (int argc, char *argv[])
   bool set_serial = false;
   const char *new_serial = 0;
 
+  bool set_serial_int = false;
+  bool new_serial_int = true;
+
+  bool set_manuf = false;
+  const char* new_manuf = 0;
+
   int exitcode = 0;
 
   int opt;
-  while ((opt = getopt (argc, argv, "rhld:m:V:P:F:M:N:S:")) != -1)
+  while ((opt = getopt (argc, argv, "rhld:m:V:P:F:M:N:S:t:C:")) != -1)
   {
     switch (opt)
     {
@@ -373,6 +615,8 @@ int main (int argc, char *argv[])
       case 'M': set_mode   = true; new_mode   = strtol (optarg, 0, 16); break;
       case 'N': set_name   = true; new_name   = optarg; break;
       case 'S': set_serial = true; new_serial = optarg; break;
+      case 'C': set_manuf  = true; new_manuf  = optarg; break;
+      case 't': set_serial_int = true; new_serial_int = strtol(optarg, 0, 10); break;
       default:
         fprintf (stderr, "error: unknown option '%c'\n", opt);
         return 12;
@@ -441,23 +685,79 @@ int main (int argc, char *argv[])
 
   libusb_set_auto_detach_kernel_driver (cp210x, 1);
 
-  if (set_vid)
-    exitcode += cp210x_set_vid (cp210x, new_vid) ? 0 : 16;
-  if (set_pid)
-    exitcode += cp210x_set_pid (cp210x, new_pid) ? 0 : 32;
-  if (set_flush)
-    exitcode += cp210x_set_flush (cp210x, new_flush) ? 0 : 64;
-  if (set_mode)
-    exitcode += cp210x_set_mode (cp210x, new_mode) ? 0 : 128;
-  if (set_name)
-    exitcode += cp210x_set_name (cp210x, new_name) ? 0 : 256;
-  if (set_serial)
-    exitcode += cp210x_set_serial (cp210x, new_serial) ? 0 : 512;
-
-  if (set_vid || set_pid || set_flush || set_mode || set_name || set_serial)
-    cp210x_reset (cp210x);
-
+  uint8_t model;
+  
   print_cp210x_cfg (cp210x);
+
+  ret = read_vendor(cp210x, ITEM_MODEL, &model, 1);
+  if (ret < 0)
+    usb_err_out("failed to read model", ret, 6);
+
+  if (model >= 32) {
+    bool changed = false;
+
+    ret = cp2102n_read_config(cp210x, &cp2102n_cfg);
+    if (ret < 0)
+      usb_err_out("failed to read config", ret, 7);
+
+    if (set_serial) {
+     cp2102n_set_serial(&cp2102n_cfg, new_serial);
+     changed = true;
+    }
+
+    if (set_serial) {
+     cp2102n_set_serial(&cp2102n_cfg, new_serial);
+     changed = true;
+    }
+
+    if (set_serial_int) {
+      cp2102n_cfg.useInternalSerial = new_serial_int ? 255 : 0;
+      changed = true;
+    }
+
+    if (set_name) {
+      cp2102n_set_name(&cp2102n_cfg, new_name);
+      changed = true;
+    }
+
+    if (set_manuf) {
+      cp2102n_set_manuf(&cp2102n_cfg, new_manuf);
+      changed = true;
+    }
+
+    if (changed) {
+      uint16_t cs = fletcher16((uint8_t*) &cp2102n_cfg, sizeof(struct cp2102n_config) - CP2102N_CHECKSUM_LEN);
+
+      // checksum must be in big endian
+      cp2102n_cfg.fletcherChecksum = htons(cs);
+
+      ret = cp2102n_write_config(cp210x, &cp2102n_cfg);
+      printf("ret: %d\n", ret);
+      if (ret < 0)
+        usb_err_out("failed to write config", ret, 8);
+      
+    }
+
+  }
+  else {
+    if (set_vid)
+      exitcode += cp210x_set_vid (cp210x, new_vid) ? 0 : 16;
+    if (set_pid)
+      exitcode += cp210x_set_pid (cp210x, new_pid) ? 0 : 32;
+    if (set_flush)
+      exitcode += cp210x_set_flush (cp210x, new_flush) ? 0 : 64;
+    if (set_mode)
+      exitcode += cp210x_set_mode (cp210x, new_mode) ? 0 : 128;
+    if (set_name)
+      exitcode += cp210x_set_name (cp210x, new_name) ? 0 : 256;
+    if (set_serial)
+      exitcode += cp210x_set_serial (cp210x, new_serial) ? 0 : 512;
+  }
+
+  if (set_vid || set_pid || set_flush || set_mode || set_name || set_serial) {
+    cp210x_reset (cp210x);
+    printf("IMPORTANT: Device needs to be replugged for some changes to take effect!\n");
+  }
 
 out:
   if (cp210x)

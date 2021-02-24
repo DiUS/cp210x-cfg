@@ -435,6 +435,20 @@ static bool cp210x_set_serial (libusb_device_handle *cp210x, const char *serial)
   return cp210x_set_cfg (cp210x, ITEM_SERI, 0, buffer, buffer[0]);
 }
 
+static bool cp2102n_set_vid(struct cp2102n_config* cfg, uint16_t vid)
+{
+  cfg->deviceDesc.set_ids_VID = vid;
+
+  return true;
+}
+
+static bool cp2102n_set_pid(struct cp2102n_config* cfg, uint16_t pid)
+{
+  cfg->deviceDesc.set_ids_PID = pid;
+
+  return true;
+}
+
 static bool cp2102n_set_name(struct cp2102n_config* cfg, const char *serial)
 {
   memset(cfg->prodDesc.set_ids_productString, 0, sizeof(cfg->prodDesc.set_ids_productString));
@@ -705,11 +719,16 @@ int main (int argc, char *argv[])
      changed = true;
     }
 
-    if (set_serial) {
-     cp2102n_set_serial(&cp2102n_cfg, new_serial);
+    if (set_vid) {
+     cp2102n_set_vid(&cp2102n_cfg, new_vid);
      changed = true;
     }
 
+    if (set_pid) {
+     cp2102n_set_pid(&cp2102n_cfg, new_pid);
+     changed = true;
+    }
+    
     if (set_serial_int) {
       cp2102n_cfg.useInternalSerial = new_serial_int ? 255 : 0;
       changed = true;

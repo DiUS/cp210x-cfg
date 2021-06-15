@@ -32,12 +32,12 @@ Consider yourself forewarned, and forearmed.
 $ ./cp210x-cfg -h
 Syntax:
 cp210x-cfg [-h ] |
-           [-m vid:pid] [-d bus:dev]
+           [-m vid:pid] [-d bus.dev]
            [ -l | [-V vid] [-P pid] [-F flush] [-M mode] [-N name] [-S serial]]
 
   -h            This help
   -m vid:pid    Find and use first device with vid:pid
-  -d bus:dev    Find and use device at bus:dev
+  -d bus.dev    Find and use device at bus.dev
   -l            List all CP210x devices connected
   -V vid        Program the given Vendor ID
   -P pid        Program the given Product ID

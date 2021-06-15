@@ -351,7 +351,7 @@ int main (int argc, char *argv[])
           fprintf (stderr, "error: bad format to -d option, expected n.n\n");
           return 10;
         }
-        want_dev = strtol (++p, NULL, 0);
+        want_dev = strtol (++p, NULL, 10);
         break;
       }
       case 'm':

@@ -283,12 +283,12 @@ void syntax (void)
   fprintf (stderr,
 "Syntax:\n"
 "cp210x-cfg [-h ] |\n"
-"           [-m vid:pid] [-d bus:dev]\n"
+"           [-m vid:pid] [-d bus.dev]\n"
 "           [ -l | [-V vid] [-P pid] [-F flush] [-M mode] [-N name] [-S serial]]\n" 
 "\n"
 "  -h            This help\n"
 "  -m vid:pid    Find and use first device with vid:pid\n"
-"  -d bus:dev    Find and use device at bus:dev\n"
+"  -d bus.dev    Find and use device at bus.dev\n"
 "  -l            List all CP210x devices connected\n"
 "  -V vid        Program the given Vendor ID\n"
 "  -P pid        Program the given Product ID\n"
@@ -351,7 +351,7 @@ int main (int argc, char *argv[])
           fprintf (stderr, "error: bad format to -d option, expected n.n\n");
           return 10;
         }
-        want_dev = strtol (++p, NULL, 0);
+        want_dev = strtol (++p, NULL, 10);
         break;
       }
       case 'm':
